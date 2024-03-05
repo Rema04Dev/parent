@@ -1,6 +1,14 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "bootstrap/dist/css/bootstrap.min.css";
-import { Button, ButtonGroup, Col, ListGroup, Row } from "react-bootstrap";
+import {
+  Button,
+  ButtonGroup,
+  Col,
+  Form,
+  ListGroup,
+  Row,
+  Stack,
+} from "react-bootstrap";
 
 type User = {
   id: string;
@@ -30,71 +38,147 @@ const people: User[] = [
   },
 ];
 
+type MessageFromObject = {
+  payload: {
+    filter: User["role"] | "all";
+  };
+  type: "object";
+};
+
+type MessageFromString = {
+  text: string;
+  type: "string";
+};
+
+type MessageFrom = MessageFromObject | MessageFromString;
+
 function App() {
+  const [isFrameShow, setIsFrameShow] = useState(false);
+  const toggleFrameShow = () => setIsFrameShow((prev) => !prev);
+
   const [users, setUsers] = useState<User[]>(people);
   const [filter, setFilter] = useState<User["role"] | "all">("all");
   const filteredUsers = users.filter(
     (user) => filter === "all" || user.role === filter
   );
 
-  useEffect(() => {
-    console.log("Parent App Loaded");
-    window.addEventListener('message', handleMessageFromChild);
-    return () => {
-      window.removeEventListener('message', handleMessageFromChild);
-    };
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [messageFromChild, setMessageFromChild] = useState("");
+  const [inputValue, setInputValue] = useState("");
+
+  const messageHandler = useCallback((event: MessageEvent) => {
+    if (event.origin !== "http://localhost:3000") return;
+    if (typeof event.data !== "string") return;
+
+    let eventMessage: MessageFrom;
+    try {
+      eventMessage = JSON.parse(event.data);
+    } catch (error) {
+      console.error("Error parsing JSON", error);
+      return;
+    }
+
+    if (eventMessage.type === "object") {
+      setFilter(eventMessage.payload.filter);
+      return;
+    }
+    if (eventMessage.type === "string") {
+      setMessageFromChild(eventMessage.text);
+      return;
+    }
   }, []);
 
-  const handleMessageFromChild = (event: MessageEvent) => {
-    if (event.origin === "http://localhost:3000") {
-      console.log("Received message from child:", event.data);
-      setFilter(event.data);
-    }
+  const sendMessageToChild = useCallback((message: MessageFrom) => {
+    if (!frameRef?.current?.contentWindow) return;
+    frameRef.current.contentWindow.postMessage(
+      JSON.stringify(message),
+      "http://localhost:3000"
+    );
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("message", messageHandler);
+    return () => {
+      window.removeEventListener("message", messageHandler);
+    };
+  }, [messageHandler]);
+
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+  
+    const handleLoad = () => {
+      sendMessageToChild({
+        payload: {
+          filter,
+        },
+        type: "object",
+      });
+    };
+  
+    frame.addEventListener('load', handleLoad);
+    return () => {
+      frame.removeEventListener('load', handleLoad);
+    };
+  }, [filter, sendMessageToChild]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInputValue(e.target.value);
+    sendMessageToChild({
+      text: e.target.value,
+      type: "string",
+    });
   };
 
-  const sendMessageToChild = (message: string) => {
-    const childFrame = document.getElementById(
-      "childFrame"
-    ) as HTMLIFrameElement | null;
-    if (childFrame) {
-      childFrame.contentWindow?.postMessage(message, "http://localhost:3000");
-    }
-  };
-
-  const handleButtonClick = (message: User["role"] | "all") => {
-    sendMessageToChild(message);
-    setFilter(message);
+  const handleClick = (filter: User["role"] | "all") => {
+    setFilter(filter);
+    sendMessageToChild({
+      payload: {
+        filter,
+      },
+      type: "object",
+    });
   };
 
   return (
     <Row className="h-100 w-100">
       <Col className="h-100 w-100">
+        <Stack direction="horizontal" gap={3}>
+          <h1>Parent App</h1>
+          <Button
+            onClick={toggleFrameShow}
+            variant={isFrameShow ? "danger" : "success"}
+          >
+            {isFrameShow ? "Размонтировать фрейм" : "Вмонтировать фрейм"}
+          </Button>
+        </Stack>
+        <hr />
         <ButtonGroup>
           <Button
             variant="outline-primary"
             active={filter === "all"}
-            onClick={() => handleButtonClick("all")}
+            onClick={() => handleClick("all")}
           >
             all
           </Button>
           <Button
             variant="outline-primary"
             active={filter === "developer"}
-            onClick={() => handleButtonClick("developer")}
+            onClick={() => handleClick("developer")}
           >
             developer
           </Button>
           <Button
             variant="outline-primary"
             active={filter === "manager"}
-            onClick={() => handleButtonClick("manager")}
+            onClick={() => handleClick("manager")}
           >
             manager
           </Button>
           <Button
             variant="outline-primary"
             active={filter === "designer"}
-            onClick={() => handleButtonClick("designer")}
+            onClick={() => handleClick("designer")}
           >
             designer
           </Button>
@@ -106,18 +190,42 @@ function App() {
             </ListGroup.Item>
           ))}
         </ListGroup>
+        <div className="mt-5">
+          <h2 className="h4">Message from child</h2>
+          <pre>{messageFromChild || "No message from child yet..."}</pre>
+          <Form>
+            <h2 className="h4">Message to child</h2>
+            <Form.Control
+              value={inputValue}
+              onChange={handleInputChange}
+              placeholder="Enter a message..."
+            />
+          </Form>
+        </div>
       </Col>
-      <Col className="h-100 w-100">
-        <iframe
-          id="childFrame"
-          src="http://localhost:3000"
-          style={{
-            border: "3px solid red",
-            height: "100%",
-            width: "100%",
-          }}
-        ></iframe>
-      </Col>
+      {isFrameShow && (
+        <Col className="h-100 w-100">
+          <iframe
+            ref={frameRef}
+            onLoad={() => {
+              sendMessageToChild({
+                payload: {
+                  filter,
+                },
+                type: "object",
+              });
+            }
+            }
+            id="childFrame"
+            src="http://localhost:3000"
+            style={{
+              border: "3px solid red",
+              height: "100%",
+              width: "100%",
+            }}
+          ></iframe>
+        </Col>
+      )}
     </Row>
   );
 }
